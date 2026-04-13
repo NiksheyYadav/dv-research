@@ -90,13 +90,15 @@ This auto-downloads two files into `data/`:
 - `pems04.csv` — sensor distance matrix (adjacency)
 
 **If download fails** (firewall / proxy), manually download from:
-- https://github.com/guoshnBJTU/ASTGCN-r-pytorch/tree/main/data/PEMS04
+-``` https://github.com/guoshnBJTU/ASTGCN-r-pytorch/tree/main/data/PEMS04```
 
 Place files as:
 ```
 data/pems04.npz
 data/pems04.csv
 ```
+**Recommended** 
+```https://huggingface.co/datasets/bjdwh/FlashST-DATA/tree/main/PEMS04```
 
 ### Step 3 — Train GPDSTGCN (main model)
 
