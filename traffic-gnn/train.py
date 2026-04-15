@@ -25,6 +25,70 @@ from utils.metrics import compute_all, format_metrics
 from models.gpdstgcn import GPDSTGCN
 
 
+# ── Pretty-print helpers ─────────────────────────────────────────────────────
+
+def print_config(cfg, n_params, device, data_dict, graph):
+    """Print a pretty box with all hyperparameters and setup info."""
+    W = 64
+    sep = "─" * W
+    print()
+    print(f"╔{'═' * W}╗")
+    print(f"║{'GPDSTGCN  –  Training Configuration':^{W}}║")
+    print(f"╠{'═' * W}╣")
+
+    def row(key, val):
+        line = f"  {key:<26s} │ {val}"
+        print(f"║{line:<{W}}║")
+
+    # Device & Model
+    row("Device", device)
+    row("Model parameters", f"{n_params:,}")
+    print(f"║{sep:^{W}}║")
+
+    # Data
+    print(f"║{'  DATA':<{W}}║")
+    row("Dataset", cfg.data_path)
+    row("Adjacency", cfg.adj_path)
+    row("Num nodes", cfg.num_nodes)
+    row("Input channels", cfg.in_channels)
+    row("Seq len  (input)", f"{cfg.seq_len}  ({cfg.seq_len * 5} min)")
+    row("Pred len (output)", f"{cfg.pred_len}  ({cfg.pred_len * 5} min)")
+    row("Eval horizons", cfg.horizons)
+    row("Train / Val / Test", f"{len(data_dict['train_loader'].dataset)} / "
+                              f"{len(data_dict['val_loader'].dataset)} / "
+                              f"{len(data_dict['test_loader'].dataset)}")
+    row("Batch size", cfg.batch_size)
+    n_edges = graph['num_edges']
+    density = graph['density']
+    row("Graph edges / density", f"{n_edges} / {density:.4f}")
+    print(f"║{sep:^{W}}║")
+
+    # Architecture
+    print(f"║{'  ARCHITECTURE':<{W}}║")
+    row("Hidden dim", cfg.hidden_dim)
+    row("ST blocks", cfg.num_layers)
+    row("ChebNet order K", cfg.cheb_k)
+    row("Attention heads", cfg.num_heads)
+    row("GRU layers", cfg.gru_layers)
+    row("Dropout", cfg.dropout)
+    row("Grid size", f"{cfg.grid_size}×{cfg.grid_size} = {cfg.grid_size**2} cells")
+    row("Expand ratio", cfg.expand_ratio)
+    print(f"║{sep:^{W}}║")
+
+    # Training
+    print(f"║{'  TRAINING':<{W}}║")
+    row("Epochs", cfg.epochs)
+    row("Learning rate", cfg.lr)
+    row("Weight decay", cfg.weight_decay)
+    row("LR decay step", cfg.lr_decay_step)
+    row("LR decay gamma", cfg.lr_decay_gamma)
+    row("Gradient clip", cfg.grad_clip)
+    row("Early-stop patience", cfg.patience)
+    row("Seed", cfg.seed)
+    print(f"╚{'═' * W}╝")
+    print()
+
+
 # ── Reproducibility ──────────────────────────────────────────────────────────
 
 def set_seed(seed: int):
@@ -40,7 +104,9 @@ def set_seed(seed: int):
 def train_epoch(model, loader, optimiser, criterion, device, grad_clip):
     model.train()
     total_loss = 0.0
-    for x, y in loader:
+    pbar = tqdm(loader, desc="  ► Train", leave=False,
+                bar_format="{l_bar}{bar:30}{r_bar}", colour="green")
+    for x, y in pbar:
         x = x.to(device)                       # (B, T, N, C)
         y = y.to(device).squeeze(-1)           # (B, pred_len, N)
 
@@ -51,15 +117,18 @@ def train_epoch(model, loader, optimiser, criterion, device, grad_clip):
         nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimiser.step()
         total_loss += loss.item()
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
     return total_loss / len(loader)
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, criterion, device):
+def eval_epoch(model, loader, criterion, device, desc="  ► Eval "):
     model.eval()
     total_loss = 0.0
     preds, trues = [], []
-    for x, y in loader:
+    pbar = tqdm(loader, desc=desc, leave=False,
+                bar_format="{l_bar}{bar:30}{r_bar}", colour="cyan")
+    for x, y in pbar:
         x = x.to(device)
         y = y.to(device).squeeze(-1)
         pred = model(x)
@@ -79,7 +148,6 @@ def main():
 
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[train] Using device: {device}")
 
     # ── Data ─────────────────────────────────────────────────────────────────
     data_dict   = load_pems04(cfg)
@@ -97,14 +165,13 @@ def main():
     coords_path = "data/pems04_coords.npy"
     if os.path.exists(coords_path):
         coords = np.load(coords_path)           # (N, 2)
-        print(f"[train] Loaded sensor coordinates from {coords_path}")
-    else:
-        print("[train] No coordinates found – using flat partition")
-
+    
     # ── Model ─────────────────────────────────────────────────────────────────
     model = GPDSTGCN(cfg, L_tilde, coords).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[train] Model parameters: {n_params:,}")
+
+    # ── Print config ──────────────────────────────────────────────────────────
+    print_config(cfg, n_params, device, data_dict, graph)
 
     # ── Optimiser & Scheduler ─────────────────────────────────────────────────
     optimiser = Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -120,26 +187,31 @@ def main():
     patience_counter = 0
     history = {"train_loss": [], "val_loss": []}
 
-    print("\n" + "=" * 60)
-    print("  Starting training")
-    print("=" * 60)
+    print("🚀 Starting training...\n")
 
-    for epoch in range(1, cfg.epochs + 1):
+    epoch_bar = tqdm(range(1, cfg.epochs + 1), desc="Epochs",
+                     bar_format="{l_bar}{bar:40}{r_bar}", colour="yellow")
+
+    for epoch in epoch_bar:
         t0 = time.time()
         train_loss = train_epoch(model, train_loader, optimiser, criterion,
                                  device, cfg.grad_clip)
-        val_loss, _, _ = eval_epoch(model, val_loader, criterion, device)
+        val_loss, _, _ = eval_epoch(model, val_loader, criterion, device,
+                                    desc="  ► Val  ")
         scheduler.step()
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
 
         elapsed = time.time() - t0
-        if epoch % cfg.log_every == 0 or epoch == 1:
-            lr = scheduler.get_last_lr()[0]
-            print(f"  Epoch {epoch:3d}/{cfg.epochs}  "
-                  f"train={train_loss:.4f}  val={val_loss:.4f}  "
-                  f"lr={lr:.2e}  time={elapsed:.1f}s")
+        lr = scheduler.get_last_lr()[0]
+
+        # Update epoch bar with live metrics
+        star = "★" if val_loss < best_val_loss else " "
+        epoch_bar.set_postfix_str(
+            f"train={train_loss:.4f}  val={val_loss:.4f}  "
+            f"best={best_val_loss:.4f}  lr={lr:.1e}  {elapsed:.0f}s {star}"
+        )
 
         # ── Early stopping ───────────────────────────────────────────────────
         if val_loss < best_val_loss:
@@ -155,18 +227,20 @@ def main():
         else:
             patience_counter += 1
             if patience_counter >= cfg.patience:
-                print(f"\n  Early stopping at epoch {epoch} "
-                      f"(no improvement for {cfg.patience} epochs)")
+                tqdm.write(f"\n  ⏹ Early stopping at epoch {epoch} "
+                           f"(no improvement for {cfg.patience} epochs)")
                 break
 
     # ── Test evaluation ───────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("  Test evaluation (best checkpoint)")
-    print("=" * 60)
+    print()
+    print(f"╔{'═' * 50}╗")
+    print(f"║{'TEST  EVALUATION  (best checkpoint)':^50}║")
+    print(f"╚{'═' * 50}╝")
     ckpt = torch.load(best_ckpt, map_location=device)
     model.load_state_dict(ckpt["model_state"])
 
-    _, preds, trues = eval_epoch(model, test_loader, criterion, device)
+    _, preds, trues = eval_epoch(model, test_loader, criterion, device,
+                                  desc="  ► Test ")
 
     # Inverse-transform flow dimension
     preds_real = scaler.inverse_transform(preds)
@@ -177,8 +251,8 @@ def main():
 
     # Save training history
     np.save(os.path.join(cfg.save_dir, "history.npy"), history)
-    print(f"\n  Best checkpoint : {best_ckpt}")
-    print(f"  Best val loss  : {best_val_loss:.4f}")
+    print(f"\n  ✅ Best checkpoint : {best_ckpt}")
+    print(f"  ✅ Best val loss   : {best_val_loss:.4f}")
 
 
 if __name__ == "__main__":

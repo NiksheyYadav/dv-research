@@ -95,12 +95,13 @@ def build_graph(adj_path: str, num_nodes: int) -> dict:
     L = _compute_laplacian(A)
     L_tilde = _scaled_laplacian(L)
 
-    print(f"[graph] Adjacency: {num_nodes} nodes, "
-          f"{(A > 0).sum() - num_nodes} edges, "
-          f"density={((A > 0).sum() - num_nodes) / (num_nodes * (num_nodes - 1)):.4f}")
+    num_edges = int((A > 0).sum()) - num_nodes
+    density = num_edges / (num_nodes * (num_nodes - 1)) if num_nodes > 1 else 0.0
 
     return {
-        "A":       A,
-        "L":       L,
-        "L_tilde": torch.FloatTensor(L_tilde),
+        "A":          A,
+        "L":          L,
+        "L_tilde":    torch.FloatTensor(L_tilde),
+        "num_edges":  num_edges,
+        "density":    density,
     }
